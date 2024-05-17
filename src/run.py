@@ -1,3 +1,4 @@
+#import of libraries
 import matplotlib.pyplot as plt
 import numpy as np
 import os
@@ -15,7 +16,7 @@ import statistics
 import sys
 
 
-# image rescale according to min and max value (coef - ratio of lower values reduction)
+#image rescale according to min and max value (coef - ratio of lower values reduction)
 def rescaling(im,coef):
   mn=np.min(im)
   mx=np.max(im)
@@ -24,7 +25,7 @@ def rescaling(im,coef):
   return im
 
 
-# frequency transformation with given mask
+#frequency (fourier) transformation with given mask
 def fourier(im,mask):
   ft = np.fft.fft2(im)
   ft_amp = np.abs(ft)
@@ -37,7 +38,7 @@ def fourier(im,mask):
   return im
 
 
-# automatic threshold calculation using image statistics (coef - std tolerance, ori - orientation of thresholding - upper/lower )
+#automatic threshold calculation using image statistics (coef - std tolerance, ori - orientation of thresholding - upper/lower )
 def threshold(im,coef,ori):
   mhigh=statistics.median_high(im.ravel())
   pstdev=statistics.pstdev(im.ravel())
@@ -56,8 +57,9 @@ def focus(im):
   x, y = np.nonzero(im)
   xl,xr = x.min(),x.max()
   yl,yr = y.min(),y.max()
-
-  return xl,xr,yl,yr
+  im=im[xl:xr, yl:yr].astype('float64')
+    
+  return im,xl,xr,yl,yr
 
 
 #relative cropping of image (vertical/horizontal)
@@ -97,6 +99,7 @@ def intersections(im):
   hor=im
 
   #suppression of horizontal (ver) and vertical (hor) lines
+  #mv,mh - vertical/horizontal convolution kernels
   mv = np.array([[1],[1],[1],[1],[1]])
   mh = np.array([[1,1,1,1,1]])
   for i in range(10):
@@ -115,7 +118,7 @@ def intersections(im):
   ver=skimage.filters.gaussian(ver,2)
   hor=skimage.filters.gaussian(hor,2)
 
-  #aditional filtration of horizontal and vertical lines
+  #aditional frequency filtration of horizontal and vertical lines
   x, y = np.indices(ver.shape)
   mask = abs((x-ver.shape[0]/2)) <= 0.5*abs(y-ver.shape[1]/2)+1
   ver=fourier(ver,mask)
@@ -124,21 +127,21 @@ def intersections(im):
   mask = abs((y-hor.shape[1]/2)) <= 0.5*abs(x-hor.shape[0]/2)+1
   hor=fourier(hor,mask)
 
-  #overlaying of vertical and horizontal lines (higher values in intersections)
-  cross=ver+hor
+  #overlay of vertical and horizontal lines (higher values in intersections)
+  com=ver+hor
 
   #supressing non overlaying parts
-  cross=rescaling(cross,0.5)
+  com=rescaling(com,0.5)
 
   #residual horizontal lines filtered out (vertical lines convenient)
-  x, y = np.indices(cross.shape)
-  mask = abs((x-cross.shape[0]/2)) <= 0.5*abs(y-cross.shape[1]/2)+1
-  cross=fourier(cross,mask)
+  x, y = np.indices(com.shape)
+  mask = abs((x-com.shape[0]/2)) <= 0.5*abs(y-com.shape[1]/2)+1
+  com=fourier(com,mask)
 
-  cross=skimage.filters.gaussian(cross,1)
-  cross=rescaling(cross,0)
+  com=skimage.filters.gaussian(com,1)
+  com=rescaling(com,0)
 
-  return cross
+  return com
 
 
 #identification of thin stitches
@@ -149,6 +152,7 @@ def thin_stitches(im):
   #suppression of horizontal lines
   mvs = np.array([[1],[1]])
   im=scipy.signal.convolve2d(im, mvs, mode='same', boundary='symm')
+
   im=skimage.filters.gaussian(im,1)
 
   #filtration of vertical lines
@@ -187,13 +191,13 @@ def main(output,vis,content,path,folder):
     img = skimage.io.imread(filepath)
     imgg = skimage.color.rgb2gray(img)
     
+    #copy of image with original size for visualization
     ims=imgg
-
+    
+    #identification of incision lines
     cut=incision(imgg)
 
-    #identification of lines
-    xl,xr,yl,yr=focus(cut)
-    cut=cut[xl:xr, yl:yr].astype('float64')
+    cut,xl,xr,yl,yr=focus(cut)
     
     cut=skeletonize(cut)
     cutlabel = skimage.measure.label(cut, background=0)
@@ -206,24 +210,28 @@ def main(output,vis,content,path,folder):
       pole.append(cutprops[i].bbox[3]-cutprops[i].bbox[1])
 
     cutlen=np.max(pole)
-
+    
+    #path for storing of visualised figure (for both usable and unusable images)
     fig=os.path.join(folder,content[k])
 
     #decision - incision presence and sufficient contrast (if not - unusable image)
     if cutlen>img.shape[1]/3 and (np.max(imgg)-np.min(imgg))>0.2:
-
+      
+      #identification of incision/stitches intersections
       cross=intersections(imgg)
-
+    
+      #identification of thin stitches
       thin=thin_stitches(imgg)
 
       #reducing image heights (relative reduction)
-      
+      #denominators (fine,rough reduction)
       denomf=50
       denomr=10
-
+      
+      #upper,lower,left,right - margin sizes for restoration of original image size (before focusing/cropping)
       upper=round(imgg.shape[0]/denomf)
       lower=-round(imgg.shape[0]/denomf)
-
+      
       cross=crop(cross,denomf,0)
       thin=crop(thin,denomf,0)
       imgg=crop(imgg,denomf,0)
@@ -235,10 +243,11 @@ def main(output,vis,content,path,folder):
       cross=cross[0:cross.shape[0], yl:yr]
       thin=thin[0:thin.shape[0], yl:yr]
       imgg=imgg[0:imgg.shape[0], yl:yr]
-
+      
+      #identification of basic cntours of stitches
       con=contours(imgg)
 
-      #combination of segmented contours, intersections and thin lines
+      #combination of segmented contours (higher priority-double value), intersections and thin lines
       stitches=2*con+cross+thin
 
       stitches=rescaling(stitches,0)
@@ -250,16 +259,14 @@ def main(output,vis,content,path,folder):
       right=right-round(stitches.shape[1]/denomf)
 
       #reduction of margins
-      stitches=crop(stitches,denomr,denomf)
+      stitches_crop=crop(stitches,denomr,denomf)
 
-      xl,xr,yl,yr=focus(stitches)
+      stitches,xl,xr,yl,yr=focus(stitches_crop)
 
       upper=upper+xl
-      lower=lower-(stitches.shape[0]-xr)
+      lower=lower-(stitches_crop.shape[0]-xr)
       left=left+yl
-      right=right-(stitches.shape[1]-yr)
-
-      stitches=stitches[xl:xr, yl:yr].astype('float64')
+      right=right-(stitches_crop.shape[1]-yr)
    
       stitches=skeletonize(stitches)
 
@@ -335,18 +342,18 @@ def main(output,vis,content,path,folder):
         plt.savefig(fig)
       else:
         continue
+        
   #save results to csv file
   output = os.path.join(folder,output)
   df = pd.DataFrame(results, columns = ["filename", "n_stitches"])
   df.to_csv(output, index=False)
 
 if __name__ == "__main__":
-  #path to images
+  #relative path to images
   path="images"
 
-  #folder name for visualisation of results
+  #folder name for storing of results (csv,visualisation)
   folder="results"
-  #folder=os.path.join(path,folder)
 
   dir=os.path.exists(folder)
 
